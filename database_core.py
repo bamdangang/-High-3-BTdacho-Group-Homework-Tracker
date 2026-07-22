@@ -1,29 +1,25 @@
-# database_core.py
 import os
 import sqlite3
 import logging
-from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 
-# 로깅 설정 표준화
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("EnterpriseDB")
+logger = logging.getLogger("AcademyDB")
 
 DB_FILE_PATH = "student_academy_tracker.db"
 
 def get_raw_sqlite_connection() -> sqlite3.Connection:
     """
-    고성능 대기 행렬 및 동시 스레드 동시 조회를 위한 WAL 및 busy_timeout 적용 SQLite 커넥션 팩토리.
+    여러 사용자가 동시에 접근해도 락(Lock) 충돌이 나지 않도록 WAL 모드를 설정하는 SQLite 연결 함수입니다.
     """
     conn = sqlite3.connect(
         DB_FILE_PATH,
         timeout=10.0,
         check_same_thread=False
     )
-    # WAL 모드 전면 적용을 통한 읽기-쓰기 격리 성능 극대화 
     conn.execute("PRAGMA journal_mode=WAL;")
-    conn[span_10](start_span)[span_10](end_span)[span_12](start_span)[span_12](end_span)[span_14](start_span)[span_14](end_span).execute("PRAGMA busy_timeout=5000;")
+    conn.execute("PRAGMA busy_timeout=5000;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
@@ -39,7 +35,7 @@ class StudentDTO:
 class SubmissionDTO:
     id: Optional[int]
     week_number: int
-    day_of_week: str  # 화, 수, 목, 토, 일, 월
+    day_of_week: str
     student_name: str
     is_completed: bool
     screenshot_path: Optional[str]
@@ -47,25 +43,7 @@ class SubmissionDTO:
     aha_point_text: Optional[str]
     verified_at: Optional[str]
 
-class IStudentRepository(ABC):
-    @abstractmethod
-    def get_all_students_by_group(self, group_name: str) -> List:
-        pass
-
-class ISubmissionRepository(ABC):
-    @abstractmethod
-    def get_submission(self, week: int, day: str, student_name: str) -> Optional:
-        pass
-
-    @abstractmethod
-    def save_submission(self, submission: SubmissionDTO) -> None:
-        pass
-
-    @abstractmethod
-    def get_group_weekly_stats(self, week: int, group_name: str) -> List]:
-        pass
-
-class SQLiteStudentRepository(IStudentRepository):
+class SQLiteStudentRepository:
     def __init__(self, connection: sqlite3.Connection):
         self._conn = connection
 
@@ -76,9 +54,11 @@ class SQLiteStudentRepository(IStudentRepository):
             (group_name,)
         )
         rows = cursor.fetchall()
-        return, group_name=r, student_name=r, is_leader=bool(r)) for r in rows]
+        return, group_name=r[1], student_name=r[2], is_leader=bool(r[3]))
+            for r in rows
+        ]
 
-class SQLiteSubmissionRepository(ISubmissionRepository):
+class SQLiteSubmissionRepository:
     def __init__(self, connection: sqlite3.Connection):
         self._conn = connection
 
@@ -95,9 +75,9 @@ class SQLiteSubmissionRepository(ISubmissionRepository):
         if not row:
             return None
         return SubmissionDTO(
-            id=row, week_number=row, day_of_week=row, student_name=row,
-            is_completed=bool(row), screenshot_path=row, question_text=row,
-            aha_point_text=row, verified_at=row
+            id=row, week_number=row[1], day_of_week=row[2], student_name=row[3],
+            is_completed=bool(row[4]), screenshot_path=row[5], question_text=row[6],
+            aha_point_text=row[7], verified_at=row[8]
         )
 
     def save_submission(self, submission: SubmissionDTO) -> None:
@@ -113,7 +93,7 @@ class SQLiteSubmissionRepository(ISubmissionRepository):
                   aha_point_text = excluded.aha_point_text,
                   verified_at = datetime('now', 'localtime')""",
             (submission.week_number, submission.day_of_week, submission.student_name,
-             submission.is_completed, submission.screenshot_path, submission.question_text,
+             int(submission.is_completed), submission.screenshot_path, submission.question_text,
              submission.aha_point_text)
         )
         self._conn.commit()
@@ -131,16 +111,12 @@ class SQLiteSubmissionRepository(ISubmissionRepository):
             (week, group_name)
         )
         rows = cursor.fetchall()
-        return [{"student_name": r, "completed": r, "total": r} for r in rows]
+        # 주간 과제 종류는 총 6가지(화, 수, 목, 토, 일, 월)이므로 총합을 6으로 설정하여 전송합니다.
+        return [{"student_name": r, "completed": r[1], "total": 6} for r in rows]
 
 def initialize_database_schema():
-    """
-    초기 시드 데이터 및 프로덕션 스키마 정적 구축.
-    """
     conn = get_raw_sqlite_connection()
     cursor = conn.cursor()
-    
-    # 테이블 생성
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS students (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,7 +125,6 @@ def initialize_database_schema():
             is_leader INTEGER DEFAULT 0
         )
     """)
-    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,31 +140,19 @@ def initialize_database_schema():
             FOREIGN KEY(student_name) REFERENCES students(student_name) ON DELETE CASCADE
         )
     """)
-    
-    # 초기 그룹 인원 마이그레이션 데이터 정의
+    # 조원 및 조장 구성 기초 데이터 씨딩 (박지후 학생 이름 보정 완료)
     seeding_students = [
-        # 승리 조
         ("승리 조", "승리", 1), ("승리 조", "정원", 0), ("승리 조", "예서", 0), ("승리 조", "이현", 0),
-        # 결 조
-        ("결 조", "결", 1), ("결 조", "태준", 0), ("결 조", "성시우", 0), ("결 조", "박시후", 0), ("결 조", "준환", 0),
-        # 준식 조
+        ("결 조", "결", 1), ("결 조", "태준", 0), ("결 조", "성시우", 0), ("결 조", "박지후", 0), ("결 조", "준환", 0),
         ("준식 조", "준식", 1), ("준식 조", "재범", 0), ("준식 조", "은솔", 0), ("준식 조", "강민", 0), ("준식 조", "김시우", 0),
-        # 서정 조
         ("서정 조", "서정", 1), ("서정 조", "태영", 0), ("서정 조", "승준", 0), ("서정 조", "가빈", 0),
-        # 민수 조
         ("민수 조", "민수", 1), ("민수 조", "규원", 0), ("민수 조", "성욱", 0), ("민수 조", "전지후", 0), ("민수 조", "이준", 0),
-        # 선우 조
         ("선우 조", "선우", 1), ("선우 조", "정연", 0), ("선우 조", "준오", 0), ("선우 조", "하준", 0)
     ]
-    
     for group, name, leader in seeding_students:
         cursor.execute(
             "INSERT OR IGNORE INTO students (group_name, student_name, is_leader) VALUES (?,?,?)",
             (group, name, leader)
         )
-    
     conn.commit()
     conn.close()
-
-if __name__ == "__main__":
-    initialize_database_schema()
